@@ -1,5 +1,6 @@
 # HipCollector
 A Houdini script which collects a .hip and it's file references into a single portable directory
+It can resolve file references with variables such as $HIP, $JOB, $OS and file sequences ($F / $F4 etc)
 
 # Usage
 The tool is packaged with Aelib https://github.com/Aeoll/Aelib 
@@ -15,4 +16,4 @@ Ignore render proxies
 If checked references to files with the extensions shown will be ignored
 
 # Limitations
-Probably doesn't work for references with these variables: $TAKE / $TAKENUM / $WEDGE / $WEDGENUM / $SLICE
+Probably doesn't work for references containing these variables: $TAKE / $TAKENUM / $WEDGE / $WEDGENUM / $SLICE
