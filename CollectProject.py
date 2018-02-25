@@ -5,6 +5,12 @@ from PySide2 import QtGui
 from PySide2 import QtWidgets
 from PySide2 import QtCore
 
+# TODO
+# Currently this will ignore non-HIP/JOB refs on DOP nodes
+# For non-rel files, place images in /tex, geometry in /geo etc rather than /misc?
+# Won't currently work with $WEDGE/$WEDGENUM and probably $TAKE/$TAKENUM
+# QProgressDialog?
+
 # ===========================================
 # Initial Settings Dialog
 # ===========================================
@@ -30,7 +36,11 @@ class collectSettingsDialog(QtWidgets.QDialog):
         
         self.ch_c = QtWidgets.QCheckBox("Ignore render proxies (.ifd/.ass/.rs)")
         self.ch_c.setChecked(True)
-        layout.addWidget(self.ch_c)        
+        layout.addWidget(self.ch_c)   
+        
+        self.ch_d = QtWidgets.QCheckBox("Delete non-Displayed OBJ nodes")
+        self.ch_d.setChecked(False)
+        layout.addWidget(self.ch_d)             
                                    
         # ButtonBox
         bbox = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)    
@@ -42,7 +52,7 @@ class collectSettingsDialog(QtWidgets.QDialog):
         self.setLayout(layout)      
         
     def getValues(self):
-        return [self.ch_a.isChecked(), self.ch_b.isChecked(), self.ch_c.isChecked()]   
+        return [self.ch_a.isChecked(), self.ch_b.isChecked(), self.ch_c.isChecked(), self.ch_d.isChecked()]   
         
 # ==============================================================
 # Create collection dir in $HIP and avoid overwriting existing
@@ -56,10 +66,20 @@ def createCollectionDir():
     collectDir = hou.expandString(collectDir)
     os.makedirs(collectDir)
     return collectDir
+
+def getObjParent(node):
+    if isinstance(node, hou.ObjNode):
+        return node
+    parent = node.parent()
+    if not parent:
+        return None
+    return getObjParent(parent)
     
-    
-def collectProject(IGNORE_BYPASSED, COPY_NON_RELATIVE, IGNORE_PROXY):     
+def collectProject(IGNORE_BYPASSED, COPY_NON_RELATIVE, IGNORE_PROXY, IGNORE_NONDISPLAY):     
     # save the file, then save it to the collection dir later?
+    hou.setUpdateMode(hou.updateMode.Manual)        
+    hou.setFrame(hou.playbar.playbackRange()[0])    
+    
     hou.hipFile.save()
     hipname = hou.hipFile.basename()    
     refs = hou.fileReferences()
@@ -70,6 +90,8 @@ def collectProject(IGNORE_BYPASSED, COPY_NON_RELATIVE, IGNORE_PROXY):
     # ignore refs with these extensions for refs not in $HIP or $JOB
     ignoredExt = ['.hda', '.hdalc', '.hdanc', '.otl', '.pc', '.pmap']       
 
+    # TODO Also delete non-displayed OBJ nodes when they are ignored?
+    toDel = []
     # Get refs to be copied
     toCopy = []
     toCopyMisc = [] # for non-HIP/JOB files to sort out
@@ -80,8 +102,17 @@ def collectProject(IGNORE_BYPASSED, COPY_NON_RELATIVE, IGNORE_PROXY):
             for i in xrange(10): # hack to get referenced parm since isRef is not implemented?
                 parm = parm.getReferencedParm()                
             bypassed = parm.node().isGenericFlagSet(hou.nodeFlag.Bypass)
-            # copy ref if bypass option is off or node isnt bypassed            
-            if IGNORE_BYPASSED and bypassed:
+            # Testing for display flag. Could also apply to DOPs but maybe a bad idea..
+            disp = True
+            if isinstance(parm.node(), hou.SopNode):
+                top = getObjParent(parm.node())
+                if top:
+                    disp = top.isGenericFlagSet(hou.nodeFlag.Display)  
+            ##
+            if IGNORE_NONDISPLAY and not disp:
+                toDel.append(top)
+            # copy ref if bypass option is off or node isnt bypassed                  
+            elif IGNORE_BYPASSED and bypassed:
                 pass
             # copy ref if proxy filter off or ref extension isnt a render proxy                
             elif IGNORE_PROXY and os.path.splitext(r)[1] in proxy:
@@ -90,11 +121,18 @@ def collectProject(IGNORE_BYPASSED, COPY_NON_RELATIVE, IGNORE_PROXY):
                 fname, fext = os.path.splitext(ref[1])
                 if not (r.startswith('$HIP') or r.startswith('$JOB')):
                     if COPY_NON_RELATIVE and fext not in ignoredExt:
-                        toCopyMisc.append(ref)    
+                        # Ignore Dop Nodes for now? Also ignore op: refs?
+                        if (not isinstance(parm.node(), hou.DopNode)) and (not r.startswith('op')):
+                            toCopyMisc.append(ref)    
                 else:
-                    # if not any (ref[1] in rr for rr in toCopy): # dupes?
+                    # if not any (ref[1] in rr for rr in toCopy): # we could ignore duplicates here as the parms are not changed?
                     toCopy.append(ref) 
     
+    # Delete Non-Displayed
+    if IGNORE_NONDISPLAY:
+        randomNode = hou.node("/").children()[0]
+        randomNode.deleteItems(toDel)
+                    
     # Create Progress Bar
     numToCopy = len(toCopy) + len(toCopyMisc)
     pbar = QtWidgets.QProgressDialog("Copying Files", "Abort", 0, numToCopy);
@@ -136,7 +174,7 @@ def collectProject(IGNORE_BYPASSED, COPY_NON_RELATIVE, IGNORE_PROXY):
         if re.search('\$F', r):
             s = re.sub('\$F\d+', '*', r)
             s = re.sub('\$F', '*', s)
-            print "Sequence found:" + hou.expandString(s) 
+            print "$HIP/$JOB Sequence found:" + hou.expandString(s) 
             seqFiles = glob.glob(hou.expandString(s))
             if seqFiles:
                 for f in seqFiles:
@@ -151,6 +189,7 @@ def collectProject(IGNORE_BYPASSED, COPY_NON_RELATIVE, IGNORE_PROXY):
         # Copy Single Files
         else:
             try:
+                print "$HIP/$JOB File found:" + str(r)
                 if not os.path.exists(collectedPath):
                     shutil.copy(hou.expandString(r), collectedPath)             
             except:
@@ -189,11 +228,14 @@ def collectProject(IGNORE_BYPASSED, COPY_NON_RELATIVE, IGNORE_PROXY):
             if re.search('\$F', r):                
                 s = re.sub('\$F\d+', '*', r)
                 s = re.sub('\$F', '*', s)
-                print "Sequence found:" + hou.expandString(s) 
+                print "Non-$HIP/$JOB Sequence found:" + hou.expandString(s) 
                 seqFiles = glob.glob(hou.expandString(s))
                 if seqFiles:
                     # set new parm value (with correct unexpanded $F string?)
-                    parm.set('$HIP/misc/'+ os.path.basename(r))                
+                    try:
+                        parm.set('$HIP/misc/'+ os.path.basename(r))                
+                    except:
+                        print "unable to change parm: "+parm.path()
                     for f in seqFiles:
                         try:
                             copiedFilePath = collectedMisc + '/' + os.path.basename(f)                    
@@ -207,9 +249,13 @@ def collectProject(IGNORE_BYPASSED, COPY_NON_RELATIVE, IGNORE_PROXY):
             else:
                 filename = os.path.basename(hou.expandString(r))
                 collectedMisc = collectedMisc + '/' + filename  
-                # set new parm value                
-                parm.set('$HIP/misc/'+filename)
+                # try to set new parm value
                 try:
+                    parm.set('$HIP/misc/'+filename)
+                except:
+                    print "unable to change parm: "+parm.path()
+                try:
+                    print "Non-$HIP/$JOB File found:" + str(r)                 
                     if not os.path.exists(collectedMisc):
                         shutil.copy(hou.expandString(r), collectedMisc)             
                 except:
@@ -222,6 +268,7 @@ dialog = collectSettingsDialog()
 dialog.exec_()
 if dialog.result() == 1:
     settings = dialog.getValues()
-    collectProject(settings[0], settings[1], settings[2])    
+    collectProject(settings[0], settings[1], settings[2], settings[3])    
 else:
-    print "Collect Project Cancelled"
+    pass
+    # print "Collect Project Cancelled"
