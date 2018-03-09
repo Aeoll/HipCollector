@@ -16,4 +16,4 @@ Ignore render proxies
 If checked references to files with the extensions shown will be ignored
 
 # Limitations
-Probably doesn't work for references containing these variables: $TAKE / $TAKENUM / $WEDGE / $WEDGENUM / $SLICE
+Probably doesn't work for references containing these variables: $ACTIVETAKE / $WEDGE / $WEDGENUM / $SLICE
